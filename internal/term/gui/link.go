@@ -19,6 +19,7 @@ package gui
 import (
 	"bytes"
 	"net/url"
+	"slices"
 	"unicode"
 	"unicode/utf8"
 
@@ -27,18 +28,35 @@ import (
 	"unstable.build/rune/internal/cell"
 )
 
-// linkSpan locates a URL rendered as plain text in the composited frame.
-// x1 is exclusive.
+// Link is a target rendered as text in the frame. URL is set for an
+// address that carries a scheme, and Path for a bare file path as
+// compilers and grep print it. Line and Col are 1-based and zero when the
+// text named no position; a file URL's position is reported here rather
+// than left in the URL.
+type Link struct {
+	URL       *url.URL
+	Path      string
+	Line, Col int
+}
+
+// linkSpan locates a link rendered as plain text in the composited frame.
+// x1 is exclusive. A span carries either a url or a bare path.
 type linkSpan struct {
 	y, x0, x1 int
 	url       string
+	path      string
+	line, col int
 }
 
 // linkSchemes are the schemes recognized in rendered text.
 var (
 	linkSchemes     = []string{"https://", "http://", "file://"}
 	schemeSeparator = []byte("://")
+	fileScheme      = []byte("file://")
 )
+
+// maxPositionDigits bounds a line or column so that it always fits an int.
+const maxPositionDigits = 9
 
 // rowScanner matches URLs row by row. It keeps its scratch buffer
 // between scans because a scan runs on every frame that redraws while
@@ -48,6 +66,9 @@ type rowScanner struct {
 	// wrapped accumulates a link across the rows the terminal broke it
 	// onto.
 	wrapped []byte
+	// heads holds the rows a path wrapped onto before the row that
+	// carries its position.
+	heads []linkSpan
 }
 
 // scan appends the spans found in cells to dst and returns it.
@@ -58,7 +79,11 @@ func (s *rowScanner) scan(cells [][]term.Cell, dst []linkSpan) []linkSpan {
 		if len(dst) == before {
 			continue
 		}
-		if !wrapMarked(cells[y], dst[len(dst)-1].x1) {
+		if y > 0 {
+			dst = s.joinHeads(cells, y, before, dst)
+		}
+		last := dst[len(dst)-1]
+		if last.url == "" || last.y != y || !wrapMarked(cells[y], last.x1) {
 			continue
 		}
 		dst, y = s.joinWrapped(cells, y, len(dst)-1, dst)
@@ -166,7 +191,8 @@ func (s *rowScanner) joinWrapped(
 		}
 	}
 	trimmed := trimURL(s.wrapped)
-	if !hasHost(trimmed) {
+	address, line, col := splitPosition(trimmed)
+	if !hasHost(address) {
 		// The run reached the margin on nothing but its scheme and the
 		// rows below it did not carry a host after all.
 		return dst[:first], y
@@ -178,9 +204,9 @@ func (s *rowScanner) joinWrapped(
 		dst = dst[:last]
 		last--
 	}
-	joined := string(trimmed)
+	joined := string(address)
 	for i := first; i <= last; i++ {
-		dst[i].url = joined
+		dst[i].url, dst[i].line, dst[i].col = joined, line, col
 	}
 	return dst, y
 }
@@ -194,12 +220,28 @@ func (s *rowScanner) scanRow(y int, row []term.Cell, dst []linkSpan) []linkSpan 
 	// span of a row can still be waiting: anything matched after it
 	// proves the join will never reach it.
 	pending := -1
+	// floor is where the last match ended, which a path cannot reach back
+	// past.
+	floor := 0
 	for x := 0; x < len(row); {
-		found := schemeStart(row[x:])
+		found := linkStart(row[x:])
 		if found < 0 {
 			break
 		}
 		x += found
+
+		if row[x].Ch == ':' {
+			span, ok := s.pathAt(y, row, floor, x)
+			if !ok {
+				x++
+				continue
+			}
+			dst = s.settle(row, dst, pending)
+			pending = -1
+			dst = append(dst, span)
+			x, floor = span.x1, span.x1
+			continue
+		}
 
 		width, ok := schemeAt(row, x)
 		if !ok {
@@ -219,23 +261,26 @@ func (s *rowScanner) scanRow(y int, row []term.Cell, dst []linkSpan) []linkSpan 
 			dst = s.settle(row, dst, pending)
 			dst = append(dst, linkSpan{y: y, x0: x, x1: end, url: string(s.text)})
 			pending = len(dst) - 1
-			x = end
+			x, floor = end, end
 			continue
 		}
 		trimmed := trimURL(s.text)
-		if hasHost(trimmed) {
+		address, line, col := splitPosition(trimmed)
+		if hasHost(address) {
 			dst = s.settle(row, dst, pending)
 			pending = -1
 			// Trimming only ever drops ASCII punctuation, which never
 			// continues a cluster and so always had a cell to itself.
 			dst = append(dst, linkSpan{
-				y:   y,
-				x0:  x,
-				x1:  end - (len(s.text) - len(trimmed)),
-				url: string(trimmed),
+				y:    y,
+				x0:   x,
+				x1:   end - (len(s.text) - len(trimmed)),
+				url:  string(address),
+				line: line,
+				col:  col,
 			})
 		}
-		x = end
+		x, floor = end, end
 	}
 	return dst
 }
@@ -252,45 +297,274 @@ func (s *rowScanner) settle(row []term.Cell, dst []linkSpan, i int) []linkSpan {
 		s.wrapped = appendCluster(s.wrapped, &row[x])
 	}
 	trimmed := trimURL(s.wrapped)
-	if !hasHost(trimmed) {
+	address, line, col := splitPosition(trimmed)
+	if !hasHost(address) {
 		return dst[:i]
 	}
 	dst[i].x1 -= len(s.wrapped) - len(trimmed)
-	dst[i].url = string(trimmed)
+	dst[i].url, dst[i].line, dst[i].col = string(address), line, col
 	return dst
 }
 
-// schemeStart returns the offset of the first cell that could begin a
-// scheme, or -1. Prose is the overwhelming majority of a frame, so
+// pathAt matches a bare path whose line, and optionally column, follow the
+// colon at x, as in "internal/a.go:12:3". Only a colon followed by a digit
+// gets this far, which is what keeps prose cheap to reject.
+func (s *rowScanner) pathAt(y int, row []term.Cell, floor, x int) (linkSpan, bool) {
+	line, col, end, ok := parsePosition(row, x+1)
+	if !ok {
+		return linkSpan{}, false
+	}
+	start := pathStart(row, floor, x)
+	s.text = s.text[:0]
+	for i := start; i < x; i++ {
+		s.text = appendCluster(s.text, &row[i])
+	}
+	if !isFilePath(s.text) {
+		return linkSpan{}, false
+	}
+	return linkSpan{
+		y: y, x0: start, x1: end, path: string(s.text), line: line, col: col,
+	}, true
+}
+
+// joinHeads prepends to the bare path at dst[at:] the rows it wrapped
+// across before reaching its position, when it begins at the left margin of
+// its pane. Those rows are inserted ahead of the row's own spans so the
+// spans stay in row order.
+func (s *rowScanner) joinHeads(
+	cells [][]term.Cell, y, at int, dst []linkSpan,
+) []linkSpan {
+	for i := at; i < len(dst); i++ {
+		tail := dst[i]
+		if tail.path == "" || paneStart(cells[y], tail.x0) != tail.x0 {
+			continue
+		}
+		left := tail.x0
+		heads := s.heads[:0]
+		for yy := y - 1; yy >= 0; yy-- {
+			prev := cells[yy]
+			end := left
+			for end < len(prev) && prev[end].Ch != 0 && !isFrameRune(prev[end].Ch) {
+				end++
+			}
+			if !wrapMarked(prev, end) {
+				break
+			}
+			start := pathStart(prev, left, end)
+			if start == end {
+				break
+			}
+			heads = append(heads, linkSpan{y: yy, x0: start, x1: end})
+			if start > left {
+				break
+			}
+		}
+		s.heads = heads
+		if len(heads) == 0 {
+			continue
+		}
+		slices.Reverse(heads)
+		s.text = s.text[:0]
+		for _, head := range heads {
+			for x := head.x0; x < head.x1; x++ {
+				s.text = appendCluster(s.text, &cells[head.y][x])
+			}
+		}
+		s.text = append(s.text, tail.path...)
+		if !isFilePath(s.text) {
+			continue
+		}
+		path := string(s.text)
+		dst[i].path = path
+		for k := range heads {
+			heads[k].path, heads[k].line, heads[k].col = path, tail.line, tail.col
+		}
+		dst = slices.Insert(dst, at, heads...)
+		at += len(heads)
+		i += len(heads)
+	}
+	return dst
+}
+
+// parsePosition reads "LINE" or "LINE:COL" from row[i:], returning the
+// index one past it. The position must not run into more of a word, so
+// "a.go:12x" is not one. A column is dropped, not the whole position,
+// when it cannot be read, since "a.go:12:" is just a line followed by the
+// colon that ends the message.
+func parsePosition(row []term.Cell, i int) (line, col, end int, ok bool) {
+	line, end = digits(row, i)
+	if line < 0 {
+		return 0, 0, 0, false
+	}
+	if end < len(row) && row[end].Ch == ':' {
+		if n, next := digits(row, end+1); n >= 0 {
+			col, end = n, next
+		}
+	}
+	if end < len(row) && isWordRune(row[end].Ch) {
+		return 0, 0, 0, false
+	}
+	return line, col, end, true
+}
+
+// digits reads a run of ASCII digits from row[i:], returning its value, or
+// -1 when there is none or it is too long to be a position, and the index
+// one past it.
+func digits(row []term.Cell, i int) (n, end int) {
+	end = i
+	for end < len(row) && row[end].Ch >= '0' && row[end].Ch <= '9' {
+		n = n*10 + int(row[end].Ch-'0')
+		end++
+	}
+	if end == i || end-i > maxPositionDigits {
+		return -1, end
+	}
+	return n, end
+}
+
+func isWordRune(r rune) bool {
+	return r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r)
+}
+
+// pathStart walks left from i to the first cell of the path that ends
+// there, stopping before an opening bracket the path did not close, so
+// that "(a/b.go:3)" starts at the "a" while "app/[id]/page.tsx" is whole.
+func pathStart(row []term.Cell, floor, i int) int {
+	closers := 0
+	for i > floor {
+		r := row[i-1].Ch
+		if !isPathRune(r) {
+			break
+		}
+		switch r {
+		case ')', ']', '}':
+			closers++
+		case '(', '[', '{':
+			if closers == 0 {
+				return i
+			}
+			closers--
+		}
+		i--
+	}
+	return i
+}
+
+// isPathRune reports whether r can be part of a file path rendered in
+// prose. A backslash is allowed for Windows paths. Separators that join
+// a path to its surroundings, as in "path=a/b.go:3", are not.
+func isPathRune(r rune) bool {
+	switch r {
+	case '\\':
+		return true
+	case ',', ';', '=':
+		return false
+	}
+	return isURLRune(r)
+}
+
+// isFilePath reports whether p looks like a file path rather than prose
+// such as "note" in "note:1" or "12" in "12:30". It is the second line of
+// defense after the colon and digit that precede it: a path needs a
+// directory separator or a file extension. A drive letter such as the
+// "C:" in "C:\x\a.go" is not told apart from the rest of the path, because
+// its colon is followed by a separator and so never starts a position.
+func isFilePath(p []byte) bool {
+	if len(p) == 0 || bytes.Contains(p, schemeSeparator) {
+		return false
+	}
+	return bytes.ContainsAny(p, "/\\") || hasExtension(p)
+}
+
+// hasExtension reports whether p ends in a dot and an alphanumeric
+// extension with at least one letter, which excludes "1.5" and "e.g.".
+func hasExtension(p []byte) bool {
+	dot := bytes.LastIndexByte(p, '.')
+	if dot <= 0 || dot == len(p)-1 {
+		return false
+	}
+	letter := false
+	for _, b := range p[dot+1:] {
+		switch {
+		case b >= '0' && b <= '9':
+		case b >= 'a' && b <= 'z', b >= 'A' && b <= 'Z':
+			letter = true
+		default:
+			return false
+		}
+	}
+	return letter
+}
+
+// splitPosition separates the ":LINE" or ":LINE:COL" that ends a file URL
+// from the address. Only file URLs are split, since any other scheme may
+// carry a port in that place.
+func splitPosition(u []byte) (address []byte, line, col int) {
+	if !bytes.HasPrefix(u, fileScheme) {
+		return u, 0, 0
+	}
+	rest, last, ok := cutNumber(u)
+	if !ok {
+		return u, 0, 0
+	}
+	if rest2, first, ok := cutNumber(rest); ok {
+		return rest2, first, last
+	}
+	return rest, last, 0
+}
+
+// cutNumber removes a trailing ":N" from u, never reaching into the
+// scheme, and returns what is left and N.
+func cutNumber(u []byte) (rest []byte, n int, ok bool) {
+	colon := bytes.LastIndexByte(u, ':')
+	if colon < len(fileScheme) {
+		return u, 0, false
+	}
+	digits := u[colon+1:]
+	if len(digits) == 0 || len(digits) > maxPositionDigits {
+		return u, 0, false
+	}
+	for _, b := range digits {
+		if b < '0' || b > '9' {
+			return u, 0, false
+		}
+		n = n*10 + int(b-'0')
+	}
+	return u[:colon], n, true
+}
+
+// linkStart returns the offset of the first cell that could begin a
+// scheme or is the colon before a path's position, or -1. Prose is the overwhelming majority of a frame, so
 // rejecting it is the loop worth tuning. A cell is 24 bytes, so an
 // indexed load has to rescale the index on every step. Taking a
 // fixed-length window amortizes that into one address the compiler
 // reaches the rest of the window from by immediate offset, and its
 // constant bounds are what let the checks fall away.
-func schemeStart(row []term.Cell) int {
+func linkStart(row []term.Cell) int {
 	i := 0
 	for ; i+8 <= len(row); i += 8 {
 		win := row[i : i+8 : i+8]
-		if schemeLead(win[0].Ch) || schemeLead(win[1].Ch) ||
-			schemeLead(win[2].Ch) || schemeLead(win[3].Ch) ||
-			schemeLead(win[4].Ch) || schemeLead(win[5].Ch) ||
-			schemeLead(win[6].Ch) || schemeLead(win[7].Ch) {
+		if linkLead(win[0].Ch) || linkLead(win[1].Ch) ||
+			linkLead(win[2].Ch) || linkLead(win[3].Ch) ||
+			linkLead(win[4].Ch) || linkLead(win[5].Ch) ||
+			linkLead(win[6].Ch) || linkLead(win[7].Ch) {
 			break
 		}
 	}
 	for ; i < len(row); i++ {
-		if schemeLead(row[i].Ch) {
+		if linkLead(row[i].Ch) {
 			return i
 		}
 	}
 	return -1
 }
 
-// schemeLead reports whether a cell can begin one of linkSchemes. The
+// linkLead reports whether a cell can begin one of linkSchemes. The
 // subtraction maps 'f' and 'h' — and nothing else — onto the two values
-// the mask clears, so the test costs one branch instead of two.
-func schemeLead(ch rune) bool {
-	return (uint32(ch)-'f')&^2 == 0
+// the mask clears, so the test costs one branch instead of two. A colon
+// also qualifies, as the one cell a path's position follows.
+func linkLead(ch rune) bool {
+	return (uint32(ch)-'f')&^2 == 0 || ch == ':'
 }
 
 // appendCluster writes the whole grapheme cluster a cell holds. A cell
@@ -389,12 +663,12 @@ func hasHost(u []byte) bool {
 	return i >= 0 && len(u) > i+3
 }
 
-// linkScanner gives every URL rendered as plain text a link affordance:
+// linkScanner gives every URL and file path rendered as plain text a link affordance:
 // it underlines the spans while the meta modifier is held and turns a
 // meta-click on one into an observer call. It works off the composited
 // frame, so it is agnostic to which handler drew the text.
 type linkScanner struct {
-	observer func(*url.URL)
+	observer func(Link)
 	pointer  *pointer
 	scanner  rowScanner
 	spans    []linkSpan
@@ -411,7 +685,7 @@ type linkScanner struct {
 
 func newLinkScanner(p *pointer) linkScanner {
 	return linkScanner{
-		observer: func(*url.URL) {},
+		observer: func(Link) {},
 		pointer:  p,
 	}
 }
@@ -524,12 +798,16 @@ func (l *linkScanner) handleMouse(ev term.Event, cells [][]term.Cell) bool {
 		return false
 	}
 	l.clicking = true
+	if span.url == "" {
+		l.observer(Link{Path: span.path, Line: span.line, Col: span.col})
+		return true
+	}
 	u, err := url.Parse(span.url)
 	if err != nil {
 		log.Warnf("gui: link %q: %v", span.url, err)
 		return true
 	}
-	l.observer(u)
+	l.observer(Link{URL: u, Line: span.line, Col: span.col})
 	return true
 }
 
