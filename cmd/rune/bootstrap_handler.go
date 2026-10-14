@@ -387,14 +387,27 @@ func (b *bootstrapHandler) dragObserver(ev gui.DragEvent) {
 	}
 }
 
-// linkObserver shows a URL the user meta-clicked in the rendered frame.
-func (b *bootstrapHandler) linkObserver(u *url.URL) {
-	uri, err := workspaceapi.ParseURI(u.String())
+// linkObserver opens what the user meta-clicked in the rendered frame: a
+// URL is shown, and a file at a line is opened with the cursor there.
+func (b *bootstrapHandler) linkObserver(l gui.Link) {
+	i := b.currentIDE()
+	var uri workspaceapi.URI
+	var err error
+	if l.URL != nil {
+		uri, err = workspaceapi.ParseURI(l.URL.String())
+	} else {
+		uri, err = i.FileURI(l.Path)
+	}
 	if err != nil {
 		b.notifyError("open link", err)
 		return
 	}
-	if err := b.currentIDE().Show(uri); err != nil {
+	if l.URL != nil && l.Line == 0 {
+		err = i.Show(uri)
+	} else {
+		err = i.OpenAt(uri, l.Line, l.Col)
+	}
+	if err != nil {
 		b.notifyError("open link", err)
 	}
 }

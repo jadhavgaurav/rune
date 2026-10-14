@@ -356,6 +356,19 @@ func (i *IDE) Open(file workspaceapi.URI) error {
 	return i.workspaceHandler.openURI(file, true /* focus */)
 }
 
+// OpenAt opens file, in the currently active workspace, with the cursor on
+// the 1-based line and col. A line or col below 1 is taken as 1. It fails
+// when file does not exist or is a directory. It must run on the event loop.
+func (i *IDE) OpenAt(file workspaceapi.URI, line, col int) error {
+	return i.workspaceHandler.openURIAt(file, line, col)
+}
+
+// FileURI resolves path against the focused workspace: a relative path is
+// taken from its root and a leading ~ names the workspace host's home.
+func (i *IDE) FileURI(path string) (workspaceapi.URI, error) {
+	return i.workspaceHandler.focusEx().workspace.URI(path)
+}
+
 // DispatchCommand runs cmd in the focused workspace, as if it had been
 // typed in the command prompt. Commands that exit the IDE cannot be run
 // this way: the exit signal is only observable on the handler event

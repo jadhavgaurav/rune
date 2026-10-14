@@ -610,6 +610,202 @@ func TestRowScannerScanRow(t *testing.T) {
 				{y: 3, x0: 0, x1: 9, url: "https://a"},
 			},
 		},
+		{
+			description: "bare path with line and column",
+			row:         cellRow("a/b.go:12:3"),
+			expected: []linkSpan{
+				{y: 3, x0: 0, x1: 11, path: "a/b.go", line: 12, col: 3},
+			},
+		},
+		{
+			description: "bare path with a line only",
+			row:         cellRow("a/b.go:12"),
+			expected: []linkSpan{
+				{y: 3, x0: 0, x1: 9, path: "a/b.go", line: 12},
+			},
+		},
+		{
+			description: "the colon a compiler appends is not part of the match",
+			row:         cellRow("./b.go:1:1:"),
+			expected: []linkSpan{
+				{y: 3, x0: 0, x1: 10, path: "./b.go", line: 1, col: 1},
+			},
+		},
+		{
+			description: "a path inside a compiler message",
+			row: cellRow(
+				"internal/term/gui/link.go:442:36: not enough arguments in call"),
+			expected: []linkSpan{
+				{
+					y: 3, x0: 0, x1: 32,
+					path: "internal/term/gui/link.go", line: 442, col: 36,
+				},
+			},
+		},
+		{
+			description: "grep output keeps the line and drops the match text",
+			row:         cellRow("cmd/main.go:7:func main() {"),
+			expected: []linkSpan{
+				{y: 3, x0: 0, x1: 13, path: "cmd/main.go", line: 7},
+			},
+		},
+		{
+			description: "a path in parentheses",
+			row:         cellRow("(a/b.go:12)"),
+			expected: []linkSpan{
+				{y: 3, x0: 1, x1: 10, path: "a/b.go", line: 12},
+			},
+		},
+		{
+			description: "a path in quotes",
+			row:         cellRow(`"a/b.go:12:3"`),
+			expected: []linkSpan{
+				{y: 3, x0: 1, x1: 12, path: "a/b.go", line: 12, col: 3},
+			},
+		},
+		{
+			description: "a path after a key and an equals sign",
+			row:         cellRow("path=a/b.go:3"),
+			expected: []linkSpan{
+				{y: 3, x0: 5, x1: 13, path: "a/b.go", line: 3},
+			},
+		},
+		{
+			description: "brackets inside a path are kept",
+			row:         cellRow("app/[id]/page.tsx:9"),
+			expected: []linkSpan{
+				{y: 3, x0: 0, x1: 19, path: "app/[id]/page.tsx", line: 9},
+			},
+		},
+		{
+			description: "an absolute path",
+			row:         cellRow("at /usr/lib/x.c:5:1"),
+			expected: []linkSpan{
+				{y: 3, x0: 3, x1: 19, path: "/usr/lib/x.c", line: 5, col: 1},
+			},
+		},
+		{
+			description: "a home relative path",
+			row:         cellRow("~/src/x.go:5"),
+			expected: []linkSpan{
+				{y: 3, x0: 0, x1: 12, path: "~/src/x.go", line: 5},
+			},
+		},
+		{
+			description: "a bare file name with an extension",
+			row:         cellRow("main.go:5:2: oops"),
+			expected: []linkSpan{
+				{y: 3, x0: 0, x1: 11, path: "main.go", line: 5, col: 2},
+			},
+		},
+		{
+			description: "a windows path keeps its drive letter",
+			row:         cellRow(`C:\x\y.go:12:3`),
+			expected: []linkSpan{
+				{y: 3, x0: 0, x1: 14, path: `C:\x\y.go`, line: 12, col: 3},
+			},
+		},
+		{
+			description: "a windows drive letter is not a line number",
+			row:         cellRow(`C:\x\dir and D:/tmp`),
+		},
+		{
+			description: "a windows path with forward slashes",
+			row:         cellRow("D:/src/y.go:4"),
+			expected: []linkSpan{
+				{y: 3, x0: 0, x1: 13, path: "D:/src/y.go", line: 4},
+			},
+		},
+		{
+			description: "two paths in one row",
+			row:         cellRow("a/b.go:1 then c/d.go:2:3"),
+			expected: []linkSpan{
+				{y: 3, x0: 0, x1: 8, path: "a/b.go", line: 1},
+				{y: 3, x0: 14, x1: 24, path: "c/d.go", line: 2, col: 3},
+			},
+		},
+		{
+			description: "a url and a path in one row",
+			row:         cellRow("see https://e.com/a and a/b.go:4"),
+			expected: []linkSpan{
+				{y: 3, x0: 4, x1: 19, url: "https://e.com/a"},
+				{y: 3, x0: 24, x1: 32, path: "a/b.go", line: 4},
+			},
+		},
+		{
+			description: "a position is not read from an http url",
+			row:         cellRow("https://e.com/a.go:12:3"),
+			expected: []linkSpan{
+				{y: 3, x0: 0, x1: 23, url: "https://e.com/a.go:12:3"},
+			},
+		},
+		{
+			description: "a port is not a position",
+			row:         cellRow("http://h:8080"),
+			expected: []linkSpan{
+				{y: 3, x0: 0, x1: 13, url: "http://h:8080"},
+			},
+		},
+		{
+			description: "file url with line and column",
+			row:         cellRow("file:///x/y.go:7:2"),
+			expected: []linkSpan{
+				{y: 3, x0: 0, x1: 18, url: "file:///x/y.go", line: 7, col: 2},
+			},
+		},
+		{
+			description: "file url with a line only",
+			row:         cellRow("file:///x/y.go:7"),
+			expected: []linkSpan{
+				{y: 3, x0: 0, x1: 16, url: "file:///x/y.go", line: 7},
+			},
+		},
+		{
+			description: "file url with a trailing colon after the position",
+			row:         cellRow("file:///x/y.go:7:2: oops"),
+			expected: []linkSpan{
+				{y: 3, x0: 0, x1: 18, url: "file:///x/y.go", line: 7, col: 2},
+			},
+		},
+		{
+			description: "file url without a position",
+			row:         cellRow("file:///x/y.go"),
+			expected: []linkSpan{
+				{y: 3, x0: 0, x1: 14, url: "file:///x/y.go"},
+			},
+		},
+		{
+			description: "a word followed by a number is prose",
+			row:         cellRow("see foo:1 and note:2"),
+		},
+		{
+			description: "a time is prose",
+			row:         cellRow("meet at 12:30 or 9:15:00"),
+		},
+		{
+			description: "an address with a port is prose",
+			row:         cellRow("listening on 127.0.0.1:8080"),
+		},
+		{
+			description: "a version is prose",
+			row:         cellRow("upgrade to v1.2:3"),
+		},
+		{
+			description: "a path without a position is not matched",
+			row:         cellRow("see a/b.go: not found"),
+		},
+		{
+			description: "a position running into a word is not matched",
+			row:         cellRow("a/b.go:12x"),
+		},
+		{
+			description: "a line too long to be a position is not matched",
+			row:         cellRow("a/b.go:1234567890"),
+		},
+		{
+			description: "a url with an unknown scheme is not a path",
+			row:         cellRow("ftp://h/x.go:12"),
+		},
 	}
 
 	for _, tc := range suite {
@@ -784,6 +980,9 @@ func FuzzRowScannerScan(f *testing.F) {
 	f.Add("https://a.com/👨\u200d👧\u200d👦", 6)
 	f.Add("\u0301\u0301\u0301https://a.com\ufe0f", 3)
 	f.Add("[![a](https://a.com/(x)y)](https://b.com/[z])", 9)
+	f.Add("a/b.go:12:3: oops", 7)
+	f.Add("(a/b.go:1) C:\\x\\y.go:2:3 file:///x:4:5", 5)
+	f.Add(":1:2:3 ::: a:1 /:1 .:1", 3)
 
 	f.Fuzz(func(t *testing.T, text string, width int) {
 		width = min(max(width, 1), 256)
@@ -822,7 +1021,7 @@ func FuzzRowScannerScan(f *testing.F) {
 			require.GreaterOrEqual(t, span.x0, 0)
 			require.Greater(t, span.x1, span.x0)
 			require.LessOrEqual(t, span.x1, len(cells[span.y]))
-			require.NotEmpty(t, span.url)
+			require.True(t, span.url != "" || span.path != "")
 		}
 	})
 }
@@ -1016,9 +1215,9 @@ func TestRowScannerJoinsURLWrappedAcrossRows(t *testing.T) {
 
 // linkTestGUI installs a handler drawing rows and returns the GUI plus the
 // URLs its link observer received.
-func linkTestGUI(t *testing.T, rows ...string) (*GUI, *mockInputManager, *[]*url.URL) {
+func linkTestGUI(t *testing.T, rows ...string) (*GUI, *mockInputManager, *[]Link) {
 	t.Helper()
-	var opened []*url.URL
+	var opened []Link
 	mock := mockHandler{
 		assertDraw: func(w term.Writer) {
 			for y, row := range rows {
@@ -1028,8 +1227,8 @@ func linkTestGUI(t *testing.T, rows ...string) (*GUI, *mockInputManager, *[]*url
 		assertEvent: func(term.Event) (bool, bool) { return false, true },
 	}
 	g, input := newTestGUI(t, &mock)
-	require.NoError(t, WithLinkObserver(func(u *url.URL) {
-		opened = append(opened, u)
+	require.NoError(t, WithLinkObserver(func(l Link) {
+		opened = append(opened, l)
 	})(g))
 	g.drawHandler(g.ctx)
 	return g, input, &opened
@@ -1082,7 +1281,7 @@ func linkGrid(rows ...string) [][]term.Cell {
 	return grid
 }
 
-func heldScanner(observer func(*url.URL)) *linkScanner {
+func heldScanner(observer func(Link)) *linkScanner {
 	l := newLinkScanner()
 	if observer != nil {
 		l.observer = observer
@@ -1210,8 +1409,8 @@ func TestLinkScannerHandleMouse(t *testing.T) {
 	for _, tc := range suite {
 		t.Run(tc.description, func(t *testing.T) {
 			var opened []string
-			l := heldScanner(func(u *url.URL) {
-				opened = append(opened, u.String())
+			l := heldScanner(func(l Link) {
+				opened = append(opened, l.URL.String())
 			})
 			l.setMeta(tc.meta)
 
@@ -1233,8 +1432,8 @@ func TestLinkScannerHandleMouseWithDefaultObserver(t *testing.T) {
 }
 
 func TestLinkScannerHandleMouseOnUnparseableURL(t *testing.T) {
-	var opened []*url.URL
-	l := heldScanner(func(u *url.URL) { opened = append(opened, u) })
+	var opened []Link
+	l := heldScanner(func(l Link) { opened = append(opened, l) })
 	cells := linkGrid("https://a.com/%zz")
 
 	assert.True(t, l.handleMouse(
@@ -1260,7 +1459,7 @@ func TestLinkScannerClickOnWrappedURLOpensWholeAddress(t *testing.T) {
 		{Type: term.EventMouse, Key: term.MouseLeft, MouseX: 2, MouseY: 1},
 	} {
 		var opened []string
-		l := heldScanner(func(u *url.URL) { opened = append(opened, u.String()) })
+		l := heldScanner(func(l Link) { opened = append(opened, l.URL.String()) })
 		require.True(t, l.handleMouse(ev, cells))
 		assert.Equal(t, []string{whole}, opened)
 	}
@@ -1381,9 +1580,9 @@ func TestGUIMetaClickOpensLinkAndIsNotForwarded(t *testing.T) {
 		},
 	}
 	g, input := newTestGUI(t, &mock)
-	var opened []*url.URL
-	require.NoError(t, WithLinkObserver(func(u *url.URL) {
-		opened = append(opened, u)
+	var opened []Link
+	require.NoError(t, WithLinkObserver(func(l Link) {
+		opened = append(opened, l)
 	})(g))
 	g.drawHandler(g.ctx)
 
@@ -1397,7 +1596,7 @@ func TestGUIMetaClickOpensLinkAndIsNotForwarded(t *testing.T) {
 	require.NoError(t, g.Update())
 
 	require.Len(t, opened, 1)
-	assert.Equal(t, "https://example.com", opened[0].String())
+	assert.Equal(t, "https://example.com", opened[0].URL.String())
 	assert.Empty(t, handled, "the whole gesture is consumed")
 }
 
@@ -1413,9 +1612,9 @@ func TestGUIClickWithoutMetaIsForwarded(t *testing.T) {
 		},
 	}
 	g, _ := newTestGUI(t, &mock)
-	var opened []*url.URL
-	require.NoError(t, WithLinkObserver(func(u *url.URL) {
-		opened = append(opened, u)
+	var opened []Link
+	require.NoError(t, WithLinkObserver(func(l Link) {
+		opened = append(opened, l)
 	})(g))
 	g.drawHandler(g.ctx)
 
@@ -1542,7 +1741,7 @@ func BenchmarkLinkScannerHandleMouse(b *testing.B) {
 	miss := term.Event{Type: term.EventMouse, Key: term.MouseLeft, MouseX: 2, MouseY: 51}
 
 	b.Run("hit", func(b *testing.B) {
-		l := heldScanner(func(*url.URL) {})
+		l := heldScanner(func(Link) {})
 		l.overlay(cells)
 		b.ReportAllocs()
 		for b.Loop() {
@@ -1552,7 +1751,7 @@ func BenchmarkLinkScannerHandleMouse(b *testing.B) {
 	})
 
 	b.Run("miss", func(b *testing.B) {
-		l := heldScanner(func(*url.URL) {})
+		l := heldScanner(func(Link) {})
 		l.overlay(cells)
 		b.ReportAllocs()
 		for b.Loop() {
@@ -1769,6 +1968,289 @@ func BenchmarkRowScannerScanWrapped(b *testing.B) {
 			for b.Loop() {
 				spans = s.scan(cells, spans[:0])
 			}
+		})
+	}
+}
+
+func TestRowScannerJoinsPathWrappedAcrossRows(t *testing.T) {
+	suite := []struct {
+		description string
+		rows        []string
+		wrapped     []int
+		expected    []linkSpan
+	}{
+		{
+			description: "position on the continuation row",
+			rows: []string{
+				"error: internal/term/g",
+				"ui/link.go:12:3: oops",
+			},
+			wrapped: []int{0},
+			expected: []linkSpan{
+				{
+					y: 0, x0: 7, x1: 22,
+					path: "internal/term/gui/link.go", line: 12, col: 3,
+				},
+				{
+					y: 1, x0: 0, x1: 15,
+					path: "internal/term/gui/link.go", line: 12, col: 3,
+				},
+			},
+		},
+		{
+			description: "path across three rows",
+			rows: []string{
+				"internal/term/",
+				"gui/commands/c",
+				"ursor.go:7",
+			},
+			wrapped: []int{0, 1},
+			expected: []linkSpan{
+				{y: 0, x0: 0, x1: 14, path: "internal/term/gui/commands/cursor.go", line: 7},
+				{y: 1, x0: 0, x1: 14, path: "internal/term/gui/commands/cursor.go", line: 7},
+				{y: 2, x0: 0, x1: 10, path: "internal/term/gui/commands/cursor.go", line: 7},
+			},
+		},
+		{
+			description: "a row that did not wrap is not joined",
+			rows: []string{
+				"internal/term/g",
+				"ui/link.go:12:3",
+			},
+			expected: []linkSpan{
+				{y: 1, x0: 0, x1: 15, path: "ui/link.go", line: 12, col: 3},
+			},
+		},
+		{
+			description: "a wrapped row ending in a space is not joined",
+			rows: []string{
+				"see this ",
+				"a/b.go:2",
+			},
+			wrapped: []int{0},
+			expected: []linkSpan{
+				{y: 1, x0: 0, x1: 8, path: "a/b.go", line: 2},
+			},
+		},
+	}
+
+	for _, tc := range suite {
+		t.Run(tc.description, func(t *testing.T) {
+			var s rowScanner
+			cells := markWrapped(linkGrid(tc.rows...), tc.wrapped...)
+			assert.Equal(t, tc.expected, s.scan(cells, nil))
+		})
+	}
+}
+
+func TestRowScannerJoinsWrappedPathInsideAPane(t *testing.T) {
+	const width, left = 40, 8
+	cells := markWrapped(pane(width, left, "see internal/te", "rm/a.go:9:1"), 0)
+
+	got := new(rowScanner).scan(cells, nil)
+	assert.Equal(t, []linkSpan{
+		{y: 0, x0: left + 4, x1: left + 15, path: "internal/term/a.go", line: 9, col: 1},
+		{y: 1, x0: left, x1: left + 11, path: "internal/term/a.go", line: 9, col: 1},
+	}, got)
+}
+
+func TestRowScannerKeepsRowOrderWhenAPathJoinsAHead(t *testing.T) {
+	cells := markWrapped(linkGrid(
+		"https://a.com internal/te",
+		"rm/a.go:9 and https://b.com",
+	), 0)
+
+	got := new(rowScanner).scan(cells, nil)
+	ys := make([]int, len(got))
+	for i, span := range got {
+		ys[i] = span.y
+	}
+	assert.True(t, slices.IsSorted(ys), "spans out of row order: %v", ys)
+	assert.Len(t, got, 4)
+}
+
+func TestRowScannerLetsAWrappedURLTakeAPathLikeContinuation(t *testing.T) {
+	cells := markWrapped(linkGrid("https://rune.build/a", "b.go:9"), 0)
+
+	got := new(rowScanner).scan(cells, nil)
+	assert.Equal(t, []linkSpan{
+		{y: 0, x0: 0, x1: 20, url: "https://rune.build/ab.go:9"},
+		{y: 1, x0: 0, x1: 6, url: "https://rune.build/ab.go:9"},
+	}, got, "the url takes the continuation, as before")
+}
+
+func TestLinkScannerHandleMouseReportsPosition(t *testing.T) {
+	cells := linkGrid(
+		"a/b.go:12:3: boom",
+		"file:///x/y.go:7:2",
+		"https://e.com and c/d.go:4",
+	)
+
+	suite := []struct {
+		description string
+		x, y        int
+		expected    Link
+	}{
+		{
+			description: "bare path",
+			x:           2, y: 0,
+			expected: Link{Path: "a/b.go", Line: 12, Col: 3},
+		},
+		{
+			description: "file url",
+			x:           12, y: 1,
+			expected: Link{URL: mustParse(t, "file:///x/y.go"), Line: 7, Col: 2},
+		},
+		{
+			description: "url on a row that also holds a path",
+			x:           3, y: 2,
+			expected: Link{URL: mustParse(t, "https://e.com")},
+		},
+		{
+			description: "path with a line only",
+			x:           24, y: 2,
+			expected: Link{Path: "c/d.go", Line: 4},
+		},
+	}
+
+	for _, tc := range suite {
+		t.Run(tc.description, func(t *testing.T) {
+			var opened []Link
+			l := heldScanner(func(link Link) { opened = append(opened, link) })
+
+			ev := term.Event{
+				Type: term.EventMouse, Key: term.MouseLeft,
+				MouseX: tc.x, MouseY: tc.y,
+			}
+			assert.True(t, l.handleMouse(ev, cells))
+			assert.Equal(t, []Link{tc.expected}, opened)
+		})
+	}
+}
+
+func mustParse(t *testing.T, raw string) *url.URL {
+	t.Helper()
+	u, err := url.Parse(raw)
+	require.NoError(t, err)
+	return u
+}
+
+func TestLinkScannerOverlayUnderlinesAPathWithItsPosition(t *testing.T) {
+	l := heldScanner(nil)
+	cells := linkGrid("see a/b.go:12:3: boom")
+
+	got := l.overlay(cells)
+	for x, c := range got[0] {
+		underlined := c.Attrs&term.AttrUnderline != 0
+		assert.Equal(t, x >= 4 && x < 15, underlined, "cell %d", x)
+	}
+}
+
+func TestGUIMetaClickOnAPathReportsItsPosition(t *testing.T) {
+	g, input, opened := linkTestGUI(t, "src/a.go:12:3: undefined: x")
+
+	metaDown(input)
+	require.NoError(t, g.Update())
+	input.events = nil
+
+	g.pendingEvents = append(g.pendingEvents,
+		term.Event{Type: term.EventMouse, Key: term.MouseLeft, MouseX: 3},
+		term.Event{Type: term.EventMouse, Key: term.MouseRelease, MouseX: 3})
+	require.NoError(t, g.Update())
+
+	assert.Equal(t, []Link{{Path: "src/a.go", Line: 12, Col: 3}}, *opened)
+}
+
+func TestParsePosition(t *testing.T) {
+	suite := []struct {
+		text      string
+		line, col int
+		end       int
+		ok        bool
+	}{
+		{text: "12", line: 12, end: 2, ok: true},
+		{text: "12:3", line: 12, col: 3, end: 4, ok: true},
+		{text: "12:", line: 12, end: 2, ok: true},
+		{text: "12: msg", line: 12, end: 2, ok: true},
+		{text: "12:3:", line: 12, col: 3, end: 4, ok: true},
+		{text: "12)", line: 12, end: 2, ok: true},
+		{text: "12-14", line: 12, end: 2, ok: true},
+		{text: "0:0", line: 0, col: 0, end: 3, ok: true},
+		{text: "12x"},
+		{text: "12:3x"},
+		{text: "12_"},
+		{text: "x12"},
+		{text: ""},
+		{text: "1234567890"},
+		{text: "12:1234567890", line: 12, end: 2, ok: true},
+	}
+
+	for _, tc := range suite {
+		t.Run(tc.text, func(t *testing.T) {
+			line, col, end, ok := parsePosition(cellRow(tc.text), 0)
+			assert.Equal(t, tc.ok, ok)
+			if !ok {
+				return
+			}
+			assert.Equal(t, [3]int{tc.line, tc.col, tc.end}, [3]int{line, col, end})
+		})
+	}
+}
+
+func TestIsFilePath(t *testing.T) {
+	suite := []struct {
+		path string
+		want bool
+	}{
+		{"a/b.go", true},
+		{"./b", true},
+		{"/etc", true},
+		{`C:\x`, true},
+		{"main.go", true},
+		{"Makefile.am", true},
+		{"a.tar.gz", true},
+		{"note", false},
+		{"12", false},
+		{"", false},
+		{"1.5", false},
+		{"e.g.", false},
+		{".bashrc", false},
+		{"v1.2.3", false},
+		{"a.b-c", false},
+		{"http://h/x.go", false},
+		{"ftp://h", false},
+	}
+
+	for _, tc := range suite {
+		t.Run(tc.path, func(t *testing.T) {
+			assert.Equal(t, tc.want, isFilePath([]byte(tc.path)))
+		})
+	}
+}
+
+func TestSplitPosition(t *testing.T) {
+	suite := []struct {
+		text      string
+		address   string
+		line, col int
+	}{
+		{text: "file:///x/y.go:7:2", address: "file:///x/y.go", line: 7, col: 2},
+		{text: "file:///x/y.go:7", address: "file:///x/y.go", line: 7},
+		{text: "file:///x/y.go", address: "file:///x/y.go"},
+		{text: "file:///x/y.go:a", address: "file:///x/y.go:a"},
+		{text: "file:///x:1:2:3", address: "file:///x:1", line: 2, col: 3},
+		{text: "file://", address: "file://"},
+		{text: "file://:7", address: "file://", line: 7},
+		{text: "http://h:8080", address: "http://h:8080"},
+		{text: "https://e.com/a.go:1:2", address: "https://e.com/a.go:1:2"},
+		{text: "file:///x:1234567890", address: "file:///x:1234567890"},
+	}
+
+	for _, tc := range suite {
+		t.Run(tc.text, func(t *testing.T) {
+			address, line, col := splitPosition([]byte(tc.text))
+			assert.Equal(t, tc.address, string(address))
+			assert.Equal(t, [2]int{tc.line, tc.col}, [2]int{line, col})
 		})
 	}
 }

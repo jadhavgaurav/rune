@@ -4315,6 +4315,35 @@ func (h *workspaceManagerHandler) openURI(file workspaceapi.URI, focus bool) err
 	return err
 }
 
+// openURIAt opens file in the focused workspace and puts the cursor on the
+// 1-based line and col. It refuses a file that does not exist, which
+// openURI would instead open as a new buffer.
+func (h *workspaceManagerHandler) openURIAt(
+	file workspaceapi.URI, line, col int,
+) error {
+	ex := h.exHandler(h.focusHandler())
+	info, err := ex.workspace.Stat(file.Path())
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return fmt.Errorf("%s is a directory", file.Path())
+	}
+	tab, err := ex.editFileURI(file, ex.invokeWindow(), false)
+	if err != nil {
+		return err
+	}
+	eh, ok := tab.Handler().(text.Handler)
+	if !ok {
+		return fmt.Errorf("%s did not open in an editor", file.Path())
+	}
+	target := term.Coordinates{X: max(col, 1) - 1, Y: max(line, 1) - 1}
+	if !eh.SetCursorAtScroll(target) && eh.CursorAtScroll() != target {
+		return fmt.Errorf("could not move the cursor to line %d, column %d", line, col)
+	}
+	return nil
+}
+
 func (h *workspaceManagerHandler) openFile(file string, focus bool) error {
 	ex := h.exHandler(h.focusHandler())
 	uri, err := ex.workspace.URI(file)
