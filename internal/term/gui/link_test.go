@@ -806,6 +806,103 @@ func TestRowScannerScanRow(t *testing.T) {
 			description: "a url with an unknown scheme is not a path",
 			row:         cellRow("ftp://h/x.go:12"),
 		},
+		{
+			description: "a prefix before a colon is not part of the path",
+			row:         cellRow("see foo:bar/a.go:3 here"),
+			expected: []linkSpan{
+				{y: 3, x0: 8, x1: 18, path: "bar/a.go", line: 3},
+			},
+		},
+		{
+			description: "a label with no space after its colon",
+			row:         cellRow("FAIL:pkg/a.go:3"),
+			expected: []linkSpan{
+				{y: 3, x0: 5, x1: 15, path: "pkg/a.go", line: 3},
+			},
+		},
+		{
+			description: "a compiler prefix with no space after its colon",
+			row:         cellRow("error:src/x.c:1:9: oops"),
+			expected: []linkSpan{
+				{y: 3, x0: 6, x1: 17, path: "src/x.c", line: 1, col: 9},
+			},
+		},
+		{
+			description: "a bare name after a label",
+			row:         cellRow("FAIL:main.go:12"),
+			expected: []linkSpan{
+				{y: 3, x0: 5, x1: 15, path: "main.go", line: 12},
+			},
+		},
+		{
+			description: "a windows path after a space keeps its drive letter",
+			row:         cellRow(`see C:\x\y.go:12`),
+			expected: []linkSpan{
+				{y: 3, x0: 4, x1: 16, path: `C:\x\y.go`, line: 12},
+			},
+		},
+		{
+			description: "a windows path after a label keeps its drive letter",
+			row:         cellRow(`error:C:\x\y.go:12`),
+			expected: []linkSpan{
+				{y: 3, x0: 6, x1: 18, path: `C:\x\y.go`, line: 12},
+			},
+		},
+		{
+			description: "a letter that is part of a word is not a drive",
+			row:         cellRow(`abc:/x/y.go:3`),
+			expected: []linkSpan{
+				{y: 3, x0: 4, x1: 13, path: "/x/y.go", line: 3},
+			},
+		},
+		{
+			description: "a host and port is prose",
+			row:         cellRow("listening on example.com:8080"),
+		},
+		{
+			description: "a host with several labels and a port is prose",
+			row:         cellRow("dial api.github.com:443"),
+		},
+		{
+			description: "a host and port followed by a colon is prose",
+			row:         cellRow("dial tcp example.org:80: refused"),
+		},
+		{
+			description: "a host with a path and a port is prose",
+			row:         cellRow("localhost:8080/x"),
+		},
+		{
+			description: "an ipv6 host and port is prose",
+			row:         cellRow("listening on [::1]:8080"),
+		},
+		{
+			description: "a bare name with a source extension is a file",
+			row:         cellRow("foo_test.go:42"),
+			expected: []linkSpan{
+				{y: 3, x0: 0, x1: 14, path: "foo_test.go", line: 42},
+			},
+		},
+		{
+			description: "a bare name with several dots and a source extension",
+			row:         cellRow("api.pb.go:42:7"),
+			expected: []linkSpan{
+				{y: 3, x0: 0, x1: 14, path: "api.pb.go", line: 42, col: 7},
+			},
+		},
+		{
+			description: "a bare name with an uppercase extension",
+			row:         cellRow("README.MD:3"),
+			expected: []linkSpan{
+				{y: 3, x0: 0, x1: 11, path: "README.MD", line: 3},
+			},
+		},
+		{
+			description: "a host path with a separator is a path",
+			row:         cellRow("example.com/a.go:8080"),
+			expected: []linkSpan{
+				{y: 3, x0: 0, x1: 21, path: "example.com/a.go", line: 8080},
+			},
+		},
 	}
 
 	for _, tc := range suite {
@@ -983,6 +1080,9 @@ func FuzzRowScannerScan(f *testing.F) {
 	f.Add("a/b.go:12:3: oops", 7)
 	f.Add("(a/b.go:1) C:\\x\\y.go:2:3 file:///x:4:5", 5)
 	f.Add(":1:2:3 ::: a:1 /:1 .:1", 3)
+	f.Add("FAIL:pkg/a.go:3 example.com:8080 foo:bar/a.go:3", 20)
+	f.Add("x.go:1 a/bcdefgh/ijklmnopq.go:5", 6)
+	f.Add("a/b.go:12 3.go:5 C:\\x:/y.go:7", 9)
 
 	f.Fuzz(func(t *testing.T, text string, width int) {
 		width = min(max(width, 1), 256)
@@ -1015,13 +1115,25 @@ func FuzzRowScannerScan(f *testing.F) {
 		}
 
 		var s rowScanner
-		for _, span := range s.scan(cells, nil) {
+		spans := s.scan(cells, nil)
+		for i, span := range spans {
 			require.GreaterOrEqual(t, span.y, 0)
 			require.Less(t, span.y, len(cells))
 			require.GreaterOrEqual(t, span.x0, 0)
 			require.Greater(t, span.x1, span.x0)
 			require.LessOrEqual(t, span.x1, len(cells[span.y]))
 			require.True(t, span.url != "" || span.path != "")
+			// overlay copies a row afresh whenever the row of the span
+			// changes, so a row the spans leave and return to loses its
+			// underlines, and a span over another hides it.
+			if i > 0 {
+				prev := spans[i-1]
+				require.GreaterOrEqual(t, span.y, prev.y, "spans out of row order")
+				if span.y == prev.y {
+					require.True(t, span.x0 >= prev.x1 || prev.x0 >= span.x1,
+						"spans overlap: %+v %+v", prev, span)
+				}
+			}
 		}
 	})
 }
@@ -2069,6 +2181,84 @@ func TestRowScannerKeepsRowOrderWhenAPathJoinsAHead(t *testing.T) {
 	assert.Len(t, got, 4)
 }
 
+// leftPaneRow builds a row of a window split in two panes: left is drawn
+// in the first leftWidth cells and right from the cell rightAt, with the
+// cells between them blank. The left pane's text is marked as wrapped when
+// wrapped is set.
+func leftPaneRow(left string, leftWidth int, right string, rightAt int, wrapped bool) []term.Cell {
+	row := make([]term.Cell, rightAt+len(right))
+	copy(row, cellRow(left))
+	copy(row[rightAt:], cellRow(right))
+	if wrapped {
+		row[leftWidth-1].Bytes = cell.WrapMarker
+	}
+	return row
+}
+
+func TestRowScannerKeepsRowOrderWhenAPathJoinsSeveralHeads(t *testing.T) {
+	const leftWidth, rightAt = 12, 20
+	cells := [][]term.Cell{
+		leftPaneRow("x.go:1 a/bcd", leftWidth, "https://r0.io", rightAt, true),
+		leftPaneRow("efgh/ijklmno", leftWidth, "https://r1.io", rightAt, true),
+		leftPaneRow("pq.go:5", leftWidth, "", rightAt, false),
+	}
+
+	got := new(rowScanner).scan(cells, nil)
+
+	ys := make([]int, len(got))
+	for i, span := range got {
+		ys[i] = span.y
+	}
+	assert.True(t, slices.IsSorted(ys), "spans out of row order: %v", ys)
+	assert.Equal(t, []linkSpan{
+		{y: 0, x0: 0, x1: 6, path: "x.go", line: 1},
+		{y: 0, x0: rightAt, x1: rightAt + 13, url: "https://r0.io"},
+		{y: 0, x0: 7, x1: 12, path: "a/bcdefgh/ijklmnopq.go", line: 5},
+		{y: 1, x0: rightAt, x1: rightAt + 13, url: "https://r1.io"},
+		{y: 1, x0: 0, x1: 12, path: "a/bcdefgh/ijklmnopq.go", line: 5},
+		{y: 2, x0: 0, x1: 7, path: "a/bcdefgh/ijklmnopq.go", line: 5},
+	}, got)
+}
+
+func TestLinkScannerOverlayKeepsEveryUnderlineWhenAPathJoinsSeveralHeads(t *testing.T) {
+	const leftWidth, rightAt = 12, 20
+	cells := [][]term.Cell{
+		leftPaneRow("x.go:1 a/bcd", leftWidth, "https://r0.io", rightAt, true),
+		leftPaneRow("efgh/ijklmno", leftWidth, "https://r1.io", rightAt, true),
+		leftPaneRow("pq.go:5", leftWidth, "", rightAt, false),
+	}
+	l := heldScanner(nil)
+
+	got := l.overlay(cells)
+
+	underlined := func(y, x int) bool { return got[y][x].Attrs&term.AttrUnderline != 0 }
+	for _, at := range [][2]int{
+		{0, 0}, {0, 5}, // the path that ends the row's first pane
+		{0, 7}, {0, 11}, // the head of the wrapped path
+		{0, rightAt}, {0, rightAt + 12}, // the url in the other pane
+		{1, 0}, {1, 11},
+		{1, rightAt}, {1, rightAt + 12},
+		{2, 0}, {2, 6},
+	} {
+		assert.True(t, underlined(at[0], at[1]), "row %d, column %d", at[0], at[1])
+	}
+	assert.False(t, underlined(0, 6), "the space between the two paths")
+}
+
+func TestRowScannerDoesNotJoinAHeadOntoASpanOnItsRow(t *testing.T) {
+	// "a/b.go:12" ends the wrapped row with a position of its own, and
+	// "3.go:5" is the next line. Joining the "12" as the head of "3.go"
+	// would cover cells the first span already covers.
+	cells := markWrapped(linkGrid("a/b.go:12", "3.go:5"), 0)
+
+	got := new(rowScanner).scan(cells, nil)
+
+	assert.Equal(t, []linkSpan{
+		{y: 0, x0: 0, x1: 9, path: "a/b.go", line: 12},
+		{y: 1, x0: 0, x1: 6, path: "3.go", line: 5},
+	}, got)
+}
+
 func TestRowScannerLetsAWrappedURLTakeAPathLikeContinuation(t *testing.T) {
 	cells := markWrapped(linkGrid("https://rune.build/a", "b.go:9"), 0)
 
@@ -2207,8 +2397,13 @@ func TestIsFilePath(t *testing.T) {
 		{"/etc", true},
 		{`C:\x`, true},
 		{"main.go", true},
-		{"Makefile.am", true},
-		{"a.tar.gz", true},
+		{"foo.pb.go", true},
+		{"README.MD", true},
+		{"example.com/x", true},
+		{"example.com", false},
+		{"api.github.com", false},
+		{"localhost", false},
+		{"a.verylongextension", false},
 		{"note", false},
 		{"12", false},
 		{"", false},

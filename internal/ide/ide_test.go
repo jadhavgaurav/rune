@@ -492,6 +492,27 @@ func TestOpenAt(t *testing.T) {
 		assert.Equal(t, term.Coordinates{X: 13, Y: 3}, cursor)
 	})
 
+	t.Run("a focused companion terminal is closed and not replaced", func(t *testing.T) {
+		ex := i.workspaceHandler.focusEx()
+		ex.newEmulatorHandler = func([]string) (vtereservoir.VTE, error) {
+			return newTestVte(), nil
+		}
+		require.NoError(t, ex.toggleCompanionTerminal())
+		terminal := ex.companionTerminalWin
+		require.NotNil(t, terminal)
+		require.Equal(t, terminal, ex.invokeWindow(), "the terminal holds the focus")
+		uri, err := i.FileURI(file)
+		require.NoError(t, err)
+
+		require.NoError(t, i.OpenAt(uri, 3, 6))
+
+		assert.True(t, terminal.Closed(), "the companion terminal is dismissed")
+		assert.Nil(t, ex.companionTerminalWin)
+		gotURI, cursor := focused(t)
+		assert.Equal(t, uri, gotURI)
+		assert.Equal(t, term.Coordinates{X: 5, Y: 2}, cursor)
+	})
+
 	t.Run("a missing file is reported and not opened", func(t *testing.T) {
 		before, _ := focused(t)
 		uri, err := i.FileURI("sub/missing.go")
